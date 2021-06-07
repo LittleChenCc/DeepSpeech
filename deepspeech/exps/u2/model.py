@@ -27,7 +27,7 @@ from paddle.io import DataLoader
 from yacs.config import CfgNode
 
 from deepspeech.io.collator import SpeechCollator
-from deepspeech.io.dataset import ManifestDataset
+from deepspeech.io.dataset import ManifestDataset, FeaturizedManifestDataset
 from deepspeech.io.sampler import SortagradBatchSampler
 from deepspeech.io.sampler import SortagradDistributedBatchSampler
 from deepspeech.models.u2 import U2Model
@@ -211,13 +211,16 @@ class U2Trainer(Trainer):
         config.defrost()
         config.data.keep_transcription_text = False
 
+        # adapt the type of input
+        Dataset = FeaturizedManifestDataset if config.data.featurized else ManifestDataset
+
         # train/valid dataset, return token ids
         config.data.manifest = config.data.train_manifest
-        train_dataset = ManifestDataset.from_config(config)
+        train_dataset = Dataset.from_config(config)
 
         config.data.manifest = config.data.dev_manifest
         config.data.augmentation_config = ""
-        dev_dataset = ManifestDataset.from_config(config)
+        dev_dataset = Dataset.from_config(config)
 
         collate_fn = SpeechCollator(keep_transcription_text=False)
         if self.parallel:
@@ -262,7 +265,7 @@ class U2Trainer(Trainer):
         # config.data.max_output_len = float('inf')  # tokens
         # config.data.min_output_input_ratio = 0.00
         # config.data.max_output_input_ratio = float('inf')
-        test_dataset = ManifestDataset.from_config(config)
+        test_dataset = Dataset.from_config(config)
         # return text ord id
         self.test_loader = DataLoader(
             test_dataset,
