@@ -42,7 +42,8 @@ def read_manifest(
         max_output_len=float('inf'),
         min_output_len=0.0,
         max_output_input_ratio=float('inf'),
-        min_output_input_ratio=0.0, ):
+        min_output_input_ratio=0.0, 
+        keep_all=False):
     """Load and parse manifest file.
 
     Args:
@@ -80,7 +81,7 @@ def read_manifest(
             token_len / feat_len >= min_output_input_ratio,
             token_len / feat_len <= max_output_input_ratio,
         ]
-        if all(conditions):
+        if all(conditions) or keep_all:
             manifest.append(json_data)
     return manifest
 

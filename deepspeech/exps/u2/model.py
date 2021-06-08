@@ -21,13 +21,14 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import sacrebleu
 import paddle
 from paddle import distributed as dist
 from paddle.io import DataLoader
 from yacs.config import CfgNode
 
 from deepspeech.io.collator import SpeechCollator
-from deepspeech.io.dataset import ManifestDataset
+from deepspeech.io.dataset import ManifestDataset, FeaturizedManifestDataset
 from deepspeech.io.sampler import SortagradBatchSampler
 from deepspeech.io.sampler import SortagradDistributedBatchSampler
 from deepspeech.models.u2 import U2Model
@@ -211,13 +212,16 @@ class U2Trainer(Trainer):
         config.defrost()
         config.data.keep_transcription_text = False
 
+        # adapt the type of input
+        Dataset = FeaturizedManifestDataset if config.data.featurized else ManifestDataset
+
         # train/valid dataset, return token ids
         config.data.manifest = config.data.train_manifest
-        train_dataset = ManifestDataset.from_config(config)
+        train_dataset = Dataset.from_config(config)
 
         config.data.manifest = config.data.dev_manifest
         config.data.augmentation_config = ""
-        dev_dataset = ManifestDataset.from_config(config)
+        dev_dataset = Dataset.from_config(config)
 
         collate_fn = SpeechCollator(keep_transcription_text=False)
         if self.parallel:
@@ -262,14 +266,14 @@ class U2Trainer(Trainer):
         # config.data.max_output_len = float('inf')  # tokens
         # config.data.min_output_input_ratio = 0.00
         # config.data.max_output_input_ratio = float('inf')
-        test_dataset = ManifestDataset.from_config(config)
+        test_dataset = Dataset.from_config(config)
         # return text ord id
         self.test_loader = DataLoader(
             test_dataset,
             batch_size=config.decoding.batch_size,
             shuffle=False,
             drop_last=False,
-            collate_fn=SpeechCollator(keep_transcription_text=True))
+            collate_fn=SpeechCollator(keep_transcription_text=False))
         logger.info("Setup train/valid/test Dataloader!")
 
     def setup_model(self):
@@ -414,6 +418,53 @@ class U2Tester(U2Trainer):
             num_frames=audio_len.sum().numpy().item(),
             decode_time=decode_time)
 
+    def compute_translation_metrics(self, audio, audio_len, texts, texts_len, fout=None):
+        cfg = self.config.decoding
+        assert cfg.decoding_method == 'attention'
+        len_refs, num_ins = 0, 0
+        bleu_func = sacrebleu.corpus_bleu
+        
+        start_time = time.time()
+        text_feature = self.test_loader.dataset.text_feature
+
+        refs = [text_feature.defeaturize(text[:text_len].tolist()) for text, text_len in zip(texts, texts_len)]
+        hyps = self.model.decode(
+            audio,
+            audio_len,
+            text_feature=text_feature,
+            decoding_method=cfg.decoding_method,
+            lang_model_path=cfg.lang_model_path,
+            beam_alpha=cfg.alpha,
+            beam_beta=cfg.beta,
+            beam_size=cfg.beam_size,
+            cutoff_prob=cfg.cutoff_prob,
+            cutoff_top_n=cfg.cutoff_top_n,
+            num_processes=cfg.num_proc_bsearch,
+            ctc_weight=cfg.ctc_weight,
+            decoding_chunk_size=cfg.decoding_chunk_size,
+            num_decoding_left_chunks=cfg.num_decoding_left_chunks,
+            simulate_streaming=cfg.simulate_streaming)
+        decode_time = time.time() - start_time
+
+        for target, result in zip(refs, hyps):
+            len_refs += len(target.split())
+            num_ins += 1
+            if fout:
+                fout.write(result + "\n")
+            logger.info("\nReference: %s\nHypothesis: %s" %
+                        (target, result))
+            logger.info("One example BLEU = %s" %
+                        (bleu_func([result], [[target]]).prec_str))
+
+        return dict(
+            hyps=hyps,
+            refs=refs,
+            bleu=bleu_func(hyps, [refs]).score,
+            len_refs=len_refs,
+            num_ins=num_ins,  # num examples
+            num_frames=audio_len.sum().numpy().item(),
+            decode_time=decode_time)
+
     @mp_tools.rank_zero_only
     @paddle.no_grad()
     def test(self):
@@ -422,59 +473,110 @@ class U2Tester(U2Trainer):
         logger.info(f"Test Total Examples: {len(self.test_loader.dataset)}")
 
         stride_ms = self.test_loader.dataset.stride_ms
-        error_rate_type = None
-        errors_sum, len_refs, num_ins = 0.0, 0, 0
-        num_frames = 0.0
-        num_time = 0.0
-        with open(self.args.result_file, 'w') as fout:
-            for i, batch in enumerate(self.test_loader):
-                metrics = self.compute_metrics(*batch, fout=fout)
-                num_frames += metrics['num_frames']
-                num_time += metrics["decode_time"]
-                errors_sum += metrics['errors_sum']
-                len_refs += metrics['len_refs']
-                num_ins += metrics['num_ins']
-                error_rate_type = metrics['error_rate_type']
-                rtf = num_time / (num_frames * stride_ms)
-                logger.info(
-                    "RTF: %f, Error rate [%s] (%d/?) = %f" %
-                    (rtf, error_rate_type, num_ins, errors_sum / len_refs))
+        if self.config.decoding.error_rate_type == 'bleu':
+            hyps, refs = [], []
+            len_refs, num_ins = 0, 0
+            num_frames = 0.0
+            num_time = 0.0
+            with open(self.args.result_file, 'w') as fout:
+                for i, batch in enumerate(self.test_loader):
+                    metrics = self.compute_translation_metrics(*batch, fout=fout)
+                    hyps += metrics['hyps']
+                    refs += metrics['refs']
+                    bleu = metrics['bleu']
+                    num_frames += metrics['num_frames']
+                    num_time += metrics["decode_time"]
+                    len_refs += metrics['len_refs']
+                    num_ins += metrics['num_ins']
+                    rtf = num_time / (num_frames * stride_ms)
+                    logger.info(
+                        "RTF: %f, BELU (%d) = %f" %
+                        (rtf, num_ins, bleu))
+                        
+            rtf = num_time / (num_frames * stride_ms)
+            msg = "Test: "
+            msg += "epoch: {}, ".format(self.epoch)
+            msg += "step: {}, ".format(self.iteration)
+            msg += "RTF: {}, ".format(rtf)
+            msg += "Test set [%s]: %s" % (
+                len(hyps), str(sacrebleu.corpus_bleu(hyps, [refs])))
+            logger.info(msg)
+            bleu_meta_path = os.path.splitext(self.args.result_file)[0] + '.bleu'
+            err_type_str = "BLEU"
+            with open(bleu_meta_path, 'w') as f:
+                data = json.dumps({
+                    "epoch":
+                    self.epoch,
+                    "step":
+                    self.iteration,
+                    "rtf":
+                    rtf,
+                    err_type_str:
+                    sacrebleu.corpus_bleu(hyps, [refs]).score,
+                    "dataset_hour": (num_frames * stride_ms) / 1000.0 / 3600.0,
+                    "process_hour":
+                    num_time / 1000.0 / 3600.0,
+                    "num_examples":
+                    num_ins,
+                    "decode_method":
+                    self.config.decoding.decoding_method,
+                })
+                f.write(data + '\n')
 
-        rtf = num_time / (num_frames * stride_ms)
-        msg = "Test: "
-        msg += "epoch: {}, ".format(self.epoch)
-        msg += "step: {}, ".format(self.iteration)
-        msg += "RTF: {}, ".format(rtf)
-        msg += "Final error rate [%s] (%d/%d) = %f" % (
-            error_rate_type, num_ins, num_ins, errors_sum / len_refs)
-        logger.info(msg)
+        else:
+            error_rate_type = None
+            errors_sum, len_refs, num_ins = 0.0, 0, 0
+            num_frames = 0.0
+            num_time = 0.0
+            with open(self.args.result_file, 'w') as fout:
+                for i, batch in enumerate(self.test_loader):
+                    metrics = self.compute_metrics(*batch, fout=fout)
+                    num_frames += metrics['num_frames']
+                    num_time += metrics["decode_time"]
+                    errors_sum += metrics['errors_sum']
+                    len_refs += metrics['len_refs']
+                    num_ins += metrics['num_ins']
+                    error_rate_type = metrics['error_rate_type']
+                    rtf = num_time / (num_frames * stride_ms)
+                    logger.info(
+                        "RTF: %f, Error rate [%s] (%d/?) = %f" %
+                        (rtf, error_rate_type, num_ins, errors_sum / len_refs))
 
-        # test meta results
-        err_meta_path = os.path.splitext(self.args.result_file)[0] + '.err'
-        err_type_str = "{}".format(error_rate_type)
-        with open(err_meta_path, 'w') as f:
-            data = json.dumps({
-                "epoch":
-                self.epoch,
-                "step":
-                self.iteration,
-                "rtf":
-                rtf,
-                error_rate_type:
-                errors_sum / len_refs,
-                "dataset_hour": (num_frames * stride_ms) / 1000.0 / 3600.0,
-                "process_hour":
-                num_time / 1000.0 / 3600.0,
-                "num_examples":
-                num_ins,
-                "err_sum":
-                errors_sum,
-                "ref_len":
-                len_refs,
-                "decode_method":
-                self.config.decoding.decoding_method,
-            })
-            f.write(data + '\n')
+            rtf = num_time / (num_frames * stride_ms)
+            msg = "Test: "
+            msg += "epoch: {}, ".format(self.epoch)
+            msg += "step: {}, ".format(self.iteration)
+            msg += "RTF: {}, ".format(rtf)
+            msg += "Final error rate [%s] (%d/%d) = %f" % (
+                error_rate_type, num_ins, num_ins, errors_sum / len_refs)
+            logger.info(msg)
+
+            # test meta results
+            err_meta_path = os.path.splitext(self.args.result_file)[0] + '.err'
+            err_type_str = "{}".format(error_rate_type)
+            with open(err_meta_path, 'w') as f:
+                data = json.dumps({
+                    "epoch":
+                    self.epoch,
+                    "step":
+                    self.iteration,
+                    "rtf":
+                    rtf,
+                    error_rate_type:
+                    errors_sum / len_refs,
+                    "dataset_hour": (num_frames * stride_ms) / 1000.0 / 3600.0,
+                    "process_hour":
+                    num_time / 1000.0 / 3600.0,
+                    "num_examples":
+                    num_ins,
+                    "err_sum":
+                    errors_sum,
+                    "ref_len":
+                    len_refs,
+                    "decode_method":
+                    self.config.decoding.decoding_method,
+                })
+                f.write(data + '\n')
 
     def run_test(self):
         self.resume_or_scratch()
