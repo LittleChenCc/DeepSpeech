@@ -14,10 +14,10 @@
 import io
 import tarfile
 import time
-import kaldiio
 from collections import namedtuple
 from typing import Optional
 
+import kaldiio
 import numpy as np
 from paddle.io import Dataset
 from yacs.config import CfgNode
@@ -29,10 +29,7 @@ from deepspeech.frontend.speech import SpeechSegment
 from deepspeech.frontend.utility import read_manifest
 from deepspeech.utils.log import Log
 
-__all__ = [
-    "ManifestDataset",
-    "FeaturizedManifestDataset"
-]
+__all__ = ["ManifestDataset", "FeaturizedManifestDataset"]
 
 logger = Log(__name__).getlog()
 
@@ -41,6 +38,7 @@ TarLocalData = namedtuple('TarLocalData', ['tar2info', 'tar2object'])
 
 # filter ignore
 IgnoreSet = ['dev', 'test']
+
 
 class ManifestDataset(Dataset):
     @classmethod
@@ -75,7 +73,7 @@ class ManifestDataset(Dataset):
                 use_dB_normalization=True,
                 target_dB=-20,
                 random_seed=0,
-                featurized=False, # kaldi processed feature for input
+                featurized=False,  # kaldi processed feature for input
                 keep_transcription_text=False,
                 batch_size=32,  # batch size
                 num_workers=0,  # data loader workers
@@ -231,7 +229,8 @@ class ManifestDataset(Dataset):
             min_output_len=min_output_len,
             max_output_input_ratio=max_output_input_ratio,
             min_output_input_ratio=min_output_input_ratio,
-            keep_all=True if any(i in manifest_path for i in IgnoreSet) else False)
+            keep_all=True if any(i in manifest_path
+                                 for i in IgnoreSet) else False)
         self._manifest.sort(key=lambda x: x["feat_shape"][0])
 
     @property
@@ -355,8 +354,8 @@ class ManifestDataset(Dataset):
         instance = self._manifest[idx]
         return self.process_utterance(instance["feat"], instance["text"])
 
-class FeaturizedManifestDataset(ManifestDataset):
 
+class FeaturizedManifestDataset(ManifestDataset):
     def read_feat(self, feat_file):
         """Load, augment, featurize and normalize for speech data.
 
@@ -374,7 +373,8 @@ class FeaturizedManifestDataset(ManifestDataset):
 
         #logger.debug(f"audio feature augmentation time: {feature_aug_time}")
         return feats
-    
+
     def __getitem__(self, idx):
         instance = self._manifest[idx]
-        return self.read_feat(instance["feat"]).transpose(1, 0), instance["token_id"]
+        return self.read_feat(instance["feat"]).transpose(
+            1, 0), instance["token_id"]

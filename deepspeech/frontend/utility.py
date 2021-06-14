@@ -35,15 +35,14 @@ UNK = "<unk>"
 BLANK = "<blank>"
 
 
-def read_manifest(
-        manifest_path,
-        max_input_len=float('inf'),
-        min_input_len=0.0,
-        max_output_len=float('inf'),
-        min_output_len=0.0,
-        max_output_input_ratio=float('inf'),
-        min_output_input_ratio=0.0, 
-        keep_all=False):
+def read_manifest(manifest_path,
+                  max_input_len=float('inf'),
+                  min_input_len=0.0,
+                  max_output_len=float('inf'),
+                  min_output_len=0.0,
+                  max_output_input_ratio=float('inf'),
+                  min_output_input_ratio=0.0,
+                  keep_all=False):
     """Load and parse manifest file.
 
     Args:

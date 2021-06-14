@@ -21,14 +21,15 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import sacrebleu
 import paddle
+import sacrebleu
 from paddle import distributed as dist
 from paddle.io import DataLoader
 from yacs.config import CfgNode
 
 from deepspeech.io.collator import SpeechCollator
-from deepspeech.io.dataset import ManifestDataset, FeaturizedManifestDataset
+from deepspeech.io.dataset import FeaturizedManifestDataset
+from deepspeech.io.dataset import ManifestDataset
 from deepspeech.io.sampler import SortagradBatchSampler
 from deepspeech.io.sampler import SortagradDistributedBatchSampler
 from deepspeech.models.u2 import U2Model
@@ -418,16 +419,24 @@ class U2Tester(U2Trainer):
             num_frames=audio_len.sum().numpy().item(),
             decode_time=decode_time)
 
-    def compute_translation_metrics(self, audio, audio_len, texts, texts_len, fout=None):
+    def compute_translation_metrics(self,
+                                    audio,
+                                    audio_len,
+                                    texts,
+                                    texts_len,
+                                    fout=None):
         cfg = self.config.decoding
         assert cfg.decoding_method == 'attention'
         len_refs, num_ins = 0, 0
         bleu_func = sacrebleu.corpus_bleu
-        
+
         start_time = time.time()
         text_feature = self.test_loader.dataset.text_feature
 
-        refs = [text_feature.defeaturize(text[:text_len].tolist()) for text, text_len in zip(texts, texts_len)]
+        refs = [
+            text_feature.defeaturize(text[:text_len].tolist())
+            for text, text_len in zip(texts, texts_len)
+        ]
         hyps = self.model.decode(
             audio,
             audio_len,
@@ -451,8 +460,7 @@ class U2Tester(U2Trainer):
             num_ins += 1
             if fout:
                 fout.write(result + "\n")
-            logger.info("\nReference: %s\nHypothesis: %s" %
-                        (target, result))
+            logger.info("\nReference: %s\nHypothesis: %s" % (target, result))
             logger.info("One example BLEU = %s" %
                         (bleu_func([result], [[target]]).prec_str))
 
@@ -480,7 +488,8 @@ class U2Tester(U2Trainer):
             num_time = 0.0
             with open(self.args.result_file, 'w') as fout:
                 for i, batch in enumerate(self.test_loader):
-                    metrics = self.compute_translation_metrics(*batch, fout=fout)
+                    metrics = self.compute_translation_metrics(
+                        *batch, fout=fout)
                     hyps += metrics['hyps']
                     refs += metrics['refs']
                     bleu = metrics['bleu']
@@ -489,10 +498,9 @@ class U2Tester(U2Trainer):
                     len_refs += metrics['len_refs']
                     num_ins += metrics['num_ins']
                     rtf = num_time / (num_frames * stride_ms)
-                    logger.info(
-                        "RTF: %f, BELU (%d) = %f" %
-                        (rtf, num_ins, bleu))
-                        
+                    logger.info("RTF: %f, BELU (%d) = %f" %
+                                (rtf, num_ins, bleu))
+
             rtf = num_time / (num_frames * stride_ms)
             msg = "Test: "
             msg += "epoch: {}, ".format(self.epoch)
@@ -501,7 +509,8 @@ class U2Tester(U2Trainer):
             msg += "Test set [%s]: %s" % (
                 len(hyps), str(sacrebleu.corpus_bleu(hyps, [refs])))
             logger.info(msg)
-            bleu_meta_path = os.path.splitext(self.args.result_file)[0] + '.bleu'
+            bleu_meta_path = os.path.splitext(
+                self.args.result_file)[0] + '.bleu'
             err_type_str = "BLEU"
             with open(bleu_meta_path, 'w') as f:
                 data = json.dumps({
