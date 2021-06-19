@@ -315,6 +315,12 @@ class U2Trainer(Trainer):
                 learning_rate=optim_conf.lr,
                 warmup_steps=scheduler_conf.warmup_steps,
                 verbose=False)
+        elif scheduler_type == 'noam':
+            lr_scheduler = paddle.optimizer.lr.NoamDecay(
+                learning_rate=optim_conf.lr,
+                d_model=model_conf.encoder_conf.output_size, 
+                warmup_steps=scheduler_conf.warmup_steps,
+                verbose=False)
         else:
             raise ValueError(f"Not support scheduler: {scheduler_type}")
 
