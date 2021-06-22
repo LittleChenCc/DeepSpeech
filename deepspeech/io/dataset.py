@@ -25,9 +25,6 @@ __all__ = ["ManifestDataset", "FeaturizedManifestDataset"]
 
 logger = Log(__name__).getlog()
 
-# namedtupe need global for pickle.
-TarLocalData = namedtuple('TarLocalData', ['tar2info', 'tar2object'])
-
 # filter ignore
 IgnoreSet = ['dev', 'test']
 
